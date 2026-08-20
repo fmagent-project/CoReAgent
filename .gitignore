@@ -37,12 +37,15 @@ env/
 workspace/
 *.log
 
+# CoReAgent benchmark checkout directory
+.repos/
+
 # OS
 .DS_Store
 Thumbs.db
 
 # Config (contains API keys)
-config.yaml
+# config.yaml
 mcp.json
 
 # test file
