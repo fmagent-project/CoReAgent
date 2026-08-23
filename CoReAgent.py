@@ -9,7 +9,8 @@ For each input file under <task_dir>/input/*_input.json this script:
      input's call_graph and graph_spec;
   3. runs `uv run python -m mini_agent.cli --workspace <worktree> --task <prompt>`
      with the per-case worktree as the agent workspace;
-  4. writes the normalized result to <task_dir>/CoReAgent-<model>/<case>_output.json,
+  4. writes the normalized result to <task_dir>/CoReAgent-<model>/<case>_output.json
+     (or <task_dir>/<output_dir>/<case>_output.json when --output-dir is given),
      the console run log to <case>_agent.log, and copies the mini_agent run log
      (~/.mini-agent/log/agent_run_*.log) into the same directory under its
      original filename.
@@ -31,7 +32,7 @@ directory (e.g. CoRe_bench_lite) holding several <owner_repo> directories.
 Every case found under DIR is run, up to N cases concurrently.
 
 Usage:
-    uv run python CoReAgent.py <task_dir> [--repos-dir DIR] [--force] [--dry-run] [--model MODEL]
+    uv run python CoReAgent.py <task_dir> [--repos-dir DIR] [--output-dir DIR] [--force] [--dry-run] [--model MODEL]
     uv run python CoReAgent.py <owner_repo_dir> --workers [N] [--model MODEL]
     uv run python CoReAgent.py <benchmark_dir> --workers [N] [--model MODEL]
 """
@@ -200,6 +201,24 @@ def check_environment() -> None:
             "rg (ripgrep) is not available on PATH; the bug-finding prompt relies "
             "on it for code search. Install it (e.g. `brew install ripgrep`) and retry."
         )
+
+
+def output_dir_name(value: str) -> Path:
+    """Parse --output-dir as one directory name, never as a path."""
+    path = Path(value)
+    if (
+        not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or path.is_absolute()
+        or len(path.parts) != 1
+    ):
+        raise argparse.ArgumentTypeError(
+            "--output-dir must be a single directory name, such as 'results'; "
+            "absolute and multi-level paths are not supported"
+        )
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +645,7 @@ def process_input(
     repos_dir: Path,
     project_root: Path,
     model: str,
+    output_dir: Path | None,
     config_override_home: Path | None,
     subprocess_env: dict[str, str] | None,
     force: bool,
@@ -652,7 +672,11 @@ def process_input(
     # The per-case lock spans the whole run so the same case launched twice
     # concurrently does not double-execute or write the same outputs.
     with file_lock(repos_dir / ".locks" / f"{name}.lock"):
-        model_dir = task_dir / f"CoReAgent-{model}"
+        if output_dir is None:
+            model_dir = task_dir / f"CoReAgent-{model}"
+        else:
+            # task_dir is the individual case directory in both modes.
+            model_dir = task_dir / output_dir
         output_path = model_dir / f"{name}_output.json"
         case_log_path = model_dir / f"{name}_agent.log"
         if output_path.exists() and not force and not dry_run:
@@ -797,6 +821,14 @@ def main(argv: list[str] | None = None) -> int:
         "directory CoReAgent-<model>",
     )
     parser.add_argument(
+        "--output-dir",
+        type=output_dir_name,
+        default=None,
+        help="directory for result and log files (default: "
+        "<case_dir>/CoReAgent-<model>); must be a single directory name and is "
+        "created under each case directory",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="rerun cases whose output file already exists",
@@ -834,6 +866,7 @@ def main(argv: list[str] | None = None) -> int:
         log(f"error: task directory not found: {task_dir}")
         return 1
     repos_dir = args.repos_dir.expanduser().resolve()
+    output_dir = args.output_dir
     project_root = Path(__file__).resolve().parent
     try:
         check_environment()
@@ -866,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
                     repos_dir=repos_dir,
                     project_root=project_root,
                     model=model,
+                    output_dir=output_dir,
                     config_override_home=config_override_home,
                     subprocess_env=subprocess_env,
                     force=args.force,
@@ -907,6 +941,7 @@ def main(argv: list[str] | None = None) -> int:
                     repos_dir=repos_dir,
                     project_root=project_root,
                     model=model,
+                    output_dir=output_dir,
                     config_override_home=config_override_home,
                     subprocess_env=subprocess_env,
                     force=args.force,
