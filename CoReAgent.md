@@ -25,6 +25,8 @@ Final report (mandatory):
 Report format:
 {"bug_func": ["<id from call_graph.nodes>"], "bug_desc": "<one-paragraph description of the bug and how it is triggered>"}
 
+If multiple distinct bugs are identified, include all directly faulty function IDs in the shared `bug_func` field and describe each bug separately in the shared `bug_desc` field as `bug1: <description of bug 1>. bug2: <description of bug 2>.`
+
 If no bug can be identified:
 {"bug_func": [], "bug_desc": "No source-grounded bug candidate was reported within the provided call graph scope."}
 
