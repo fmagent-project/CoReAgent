@@ -32,6 +32,9 @@ from openai import OpenAI
 CONFIG_PATH = Path(__file__).parent / "mini_agent" / "config" / "config.yaml"
 CANDIDATE_PLACEHOLDER = "{{CANDIDATE_DESCRIPTION_JSON}}"
 ORACLE_PLACEHOLDER = "{{JUDGE_ORACLE_JSON}}"
+NO_BUG_MESSAGE = (
+    "No source-grounded bug candidate was reported within the provided call graph scope."
+)
 
 JUDGE_RESPONSE_FORMAT: dict[str, Any] = {
     "type": "json_schema",
@@ -155,16 +158,45 @@ def call_judge(client: OpenAI, model: str, prompt: str) -> dict[str, Any]:
     return parse_judge_result(content)
 
 
-def run(output_dir: Path, *, client: OpenAI, model: str) -> Path:
-    paths = derive_paths(output_dir)
-    candidate = read_json(paths.candidate, "candidate")
-    oracle = read_json(paths.oracle, "oracle")
-    prompt = build_prompt(candidate, oracle)
-    result = call_judge(client, model, prompt)
-    paths.result.write_text(
+def is_no_bug_candidate(candidate: Any) -> bool:
+    """Return whether the candidate explicitly reports no bug."""
+    return (
+        isinstance(candidate, dict)
+        and candidate.get("bug_func") == []
+        and candidate.get("bug_desc") == NO_BUG_MESSAGE
+    )
+
+
+def write_judge_result(path: Path, result: dict[str, Any]) -> None:
+    path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def run(output_dir: Path) -> Path:
+    paths = derive_paths(output_dir)
+    candidate = read_json(paths.candidate, "candidate")
+
+    # A normalized no-bug report is unambiguously a semantic non-match. Handle
+    # it before reading the oracle or loading API configuration so this path
+    # never initializes or calls the judge model.
+    if is_no_bug_candidate(candidate):
+        write_judge_result(
+            paths.result,
+            {"match": False, "reason": NO_BUG_MESSAGE},
+        )
+        return paths.result
+
+    oracle = read_json(paths.oracle, "oracle")
+    prompt = build_prompt(candidate, oracle)
+    config = load_llm_config()
+    result = call_judge(
+        OpenAI(api_key=config.api_key, base_url=config.api_base),
+        config.model,
+        prompt,
+    )
+    write_judge_result(paths.result, result)
     return paths.result
 
 
@@ -196,17 +228,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        config = load_llm_config()
-    except RuntimeError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 2
-
-    try:
-        result_path = run(
-            args.output_dir,
-            client=OpenAI(api_key=config.api_key, base_url=config.api_base),
-            model=config.model,
-        )
+        result_path = run(args.output_dir)
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
