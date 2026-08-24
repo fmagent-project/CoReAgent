@@ -258,7 +258,7 @@ class OpenAIClient(LLMClientBase):
             content=text_content,
             thinking=thinking_content if thinking_content else None,
             tool_calls=tool_calls if tool_calls else None,
-            finish_reason="stop",  # OpenAI doesn't provide finish_reason in the message
+            finish_reason=response.choices[0].finish_reason or "stop",
             usage=usage,
         )
 
