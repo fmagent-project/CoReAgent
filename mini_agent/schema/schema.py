@@ -43,6 +43,7 @@ class TokenUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_tokens_details_cached_tokens: int = 0
 
 
 class LLMResponse(BaseModel):

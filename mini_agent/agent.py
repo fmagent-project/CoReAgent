@@ -80,6 +80,10 @@ class Agent:
 
         # Token usage from last API response (updated after each LLM call)
         self.api_total_tokens: int = 0
+        self.prompt_tokens: int = 0
+        self.completion_tokens: int = 0
+        self.total_tokens: int = 0
+        self.prompt_tokens_details_cached_tokens: int = 0
         # Flag to skip token check right after summary (avoid consecutive triggers)
         self._skip_next_token_check: bool = False
 
@@ -385,6 +389,10 @@ Requirements:
             # Accumulate API reported token usage
             if response.usage:
                 self.api_total_tokens = response.usage.total_tokens
+                self.prompt_tokens += response.usage.prompt_tokens
+                self.completion_tokens += response.usage.completion_tokens
+                self.total_tokens += response.usage.total_tokens
+                self.prompt_tokens_details_cached_tokens += response.usage.prompt_tokens_details_cached_tokens
 
             # Log LLM response
             self.logger.log_response(
@@ -392,6 +400,7 @@ Requirements:
                 thinking=response.thinking,
                 tool_calls=response.tool_calls,
                 finish_reason=response.finish_reason,
+                usage=response.usage
             )
 
             # Add assistant message

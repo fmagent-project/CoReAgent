@@ -244,6 +244,7 @@ class AnthropicClient(LLMClientBase):
                 prompt_tokens=total_input_tokens,
                 completion_tokens=output_tokens,
                 total_tokens=total_input_tokens + output_tokens,
+                prompt_tokens_details_cached_tokens=0
             )
 
         return LLMResponse(

@@ -248,7 +248,11 @@ class OpenAIClient(LLMClientBase):
                 prompt_tokens=response.usage.prompt_tokens or 0,
                 completion_tokens=response.usage.completion_tokens or 0,
                 total_tokens=response.usage.total_tokens or 0,
+                prompt_tokens_details_cached_tokens=0   
             )
+            if hasattr(response.usage, "prompt_tokens_details") and response.usage.prompt_tokens_details:
+                if hasattr(response.usage.prompt_tokens_details, "cached_tokens"):
+                    usage.prompt_tokens_details_cached_tokens = response.usage.prompt_tokens_details.cached_tokens or 0
 
         return LLMResponse(
             content=text_content,

@@ -279,6 +279,10 @@ def print_stats(agent: Agent, session_start: datetime):
     print(f"  Available Tools: {len(agent.tools)}")
     if agent.api_total_tokens > 0:
         print(f"  API Tokens Used: {Colors.BRIGHT_MAGENTA}{agent.api_total_tokens:,}{Colors.RESET}")
+    print(f"  Prompt Tokens: {agent.prompt_tokens:,}")
+    print(f"  Completion Tokens: {agent.completion_tokens:,}")
+    print(f"  Total Tokens: {agent.total_tokens:,}")
+    print(f"  Cached Tokens: {agent.prompt_tokens_details_cached_tokens:,}")
     print(f"{Colors.DIM}{'─' * 40}{Colors.RESET}\n")
 
 

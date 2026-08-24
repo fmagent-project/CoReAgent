@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .schema import Message, ToolCall
+from .schema import Message, ToolCall, TokenUsage
 
 
 class AgentLogger:
@@ -88,6 +88,7 @@ class AgentLogger:
         thinking: str | None = None,
         tool_calls: list[ToolCall] | None = None,
         finish_reason: str | None = None,
+        usage: TokenUsage | None = None
     ):
         """Log LLM response
 
@@ -96,6 +97,7 @@ class AgentLogger:
             thinking: Thinking content (optional)
             tool_calls: Tool call list (optional)
             finish_reason: Finish reason (optional)
+            usage: Token usage (optional)
         """
         self.log_index += 1
 
@@ -112,6 +114,13 @@ class AgentLogger:
 
         if finish_reason:
             response_data["finish_reason"] = finish_reason
+
+        if usage:
+            response_data["usage"] = {}
+            response_data["usage"]["prompt_tokens"] = usage.prompt_tokens
+            response_data["usage"]["completion_tokens"] = usage.completion_tokens
+            response_data["usage"]["total_tokens"] = usage.total_tokens
+            response_data["usage"]["prompt_tokens_details_cached_tokens"] = usage.prompt_tokens_details_cached_tokens
 
         # Format as JSON
         log_content = "LLM Response:\n\n"
