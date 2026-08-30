@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 
 CONFIG_PATH = Path(__file__).parent / "mini_agent" / "config" / "config.yaml"
@@ -142,11 +142,25 @@ def parse_judge_result(content: str) -> dict[str, Any]:
 
 
 def call_judge(client: OpenAI, model: str, prompt: str) -> dict[str, Any]:
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        response_format=JUDGE_RESPONSE_FORMAT,
-    )
+    request = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    try:
+        response = client.chat.completions.create(
+            **request,
+            response_format=JUDGE_RESPONSE_FORMAT,
+        )
+    except BadRequestError as error:
+        # Some OpenAI-compatible APIs support JSON mode but not the stricter
+        # json_schema response format. The prompt already specifies the exact
+        # object shape, and parse_judge_result validates it after the call.
+        if "response_format type is unavailable" not in str(error):
+            raise
+        response = client.chat.completions.create(
+            **request,
+            response_format={"type": "json_object"},
+        )
     if not response.choices:
         raise RuntimeError("judge returned no choices")
     content = response.choices[0].message.content
