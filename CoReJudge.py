@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import anthropic
 from openai import BadRequestError, OpenAI
 
 
@@ -141,7 +142,22 @@ def parse_judge_result(content: str) -> dict[str, Any]:
     return {"match": result["match"], "reason": result["reason"].strip()}
 
 
-def call_judge(client: OpenAI, model: str, prompt: str) -> dict[str, Any]:
+def call_judge(client: Any, model: str, prompt: str, provider: str) -> dict[str, Any]:
+    if provider.lower() == "anthropic":
+        response = client.messages.create(
+            model=model,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = "".join(
+            block.text
+            for block in response.content
+            if getattr(block, "type", None) == "text" and isinstance(getattr(block, "text", None), str)
+        )
+        if not content.strip():
+            raise RuntimeError("judge returned empty content")
+        return parse_judge_result(content)
+
     request = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -205,11 +221,16 @@ def run(output_dir: Path) -> Path:
     oracle = read_json(paths.oracle, "oracle")
     prompt = build_prompt(candidate, oracle)
     config = load_llm_config()
-    result = call_judge(
-        OpenAI(api_key=config.api_key, base_url=config.api_base),
-        config.model,
-        prompt,
-    )
+    provider = config.provider.lower()
+    if provider == "anthropic":
+        client = anthropic.Anthropic(
+            api_key=config.api_key,
+            base_url=config.api_base,
+            default_headers={"Authorization": f"Bearer {config.api_key}"},
+        )
+    else:
+        client = OpenAI(api_key=config.api_key, base_url=config.api_base)
+    result = call_judge(client, config.model, prompt, provider)
     write_judge_result(paths.result, result)
     return paths.result
 
