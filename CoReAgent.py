@@ -32,7 +32,7 @@ directory (e.g. CoRe_bench_lite) holding several <owner_repo> directories.
 Every case found under DIR is run, up to N cases concurrently.
 
 Usage:
-    uv run python CoReAgent.py <task_dir> [--repos-dir DIR] [--output-dir DIR] [--force] [--dry-run] [--model MODEL]
+    uv run python CoReAgent.py <task_dir> [--repos-dir DIR] [--output-dir DIR] [--force] [--model MODEL]
     uv run python CoReAgent.py <owner_repo_dir> --workers [N] [--model MODEL]
     uv run python CoReAgent.py <benchmark_dir> --workers [N] [--model MODEL]
 """
@@ -97,15 +97,14 @@ def run_agent_streaming(
     cwd: Path,
     case_log_path: Path,
     header: str,
-    timeout: int | None,
     env: dict[str, str] | None = None,
-) -> tuple[str, int | None, bool]:
+) -> tuple[str, int]:
     """Run mini_agent, streaming its stdout/stderr into case_log_path in real time.
 
     The header (task metadata + prompt) is written first, then every output
     line is appended and flushed as it arrives, so the case log can be tailed
-    while the agent is still running. Returns (stdout_text, exit_code,
-    timed_out); exit_code is None when the process was killed by the timeout.
+    while the agent is still running. Returns ``(stdout_text, exit_code)``
+    after the process exits.
     """
     proc = subprocess.Popen(
         command,
@@ -154,18 +153,11 @@ def run_agent_streaming(
         stdout_thread.start()
         stderr_thread.start()
 
-        try:
-            exit_code = proc.wait(timeout=timeout)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            exit_code = None
-            timed_out = True
+        exit_code = proc.wait()
         stdout_thread.join(timeout=10)
         stderr_thread.join(timeout=10)
 
-    return "".join(stdout_parts), exit_code, timed_out
+    return "".join(stdout_parts), exit_code
 
 
 @contextmanager
@@ -649,9 +641,6 @@ def process_input(
     config_override_home: Path | None,
     subprocess_env: dict[str, str] | None,
     force: bool,
-    dry_run: bool,
-    keep_worktrees: bool,
-    timeout: int | None,
 ) -> int:
     """Run the bug-finding pipeline for one input file. Returns the process exit code."""
     name = case_name(input_path)
@@ -679,7 +668,7 @@ def process_input(
             model_dir = task_dir / output_dir
         output_path = model_dir / f"{name}_output.json"
         case_log_path = model_dir / f"{name}_agent.log"
-        if output_path.exists() and not force and not dry_run:
+        if output_path.exists() and not force:
             log(f"Skipping {name}: {output_path} already exists (use --force to rerun)")
             return 0
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -735,38 +724,14 @@ def process_input(
         ]
         captured_stdout = ""
 
-        if dry_run:
-            log(f"  [dry-run] would run: {command_prefix} --task <prompt>")
-            header.extend(
-                [
-                    "",
-                    "[dry-run] mini_agent was not executed; no result was extracted.",
-                ]
-            )
-            case_log_path.write_text("\n".join(header) + "\n", encoding="utf-8")
-            log(f"  prompt+command written to {case_log_path}")
-            log(f"  [dry-run] worktree kept at {wt_path}")
-            return 0
-
         log(f"  running: {command_prefix} --task <prompt>")
-        captured_stdout, exit_code, timed_out = run_agent_streaming(
+        captured_stdout, exit_code = run_agent_streaming(
             command,
             cwd=subprocess_cwd,
             case_log_path=case_log_path,
             header="\n".join(header) + "\n",
-            timeout=timeout,
             env=subprocess_env,
         )
-        if timed_out:
-            saved_log = save_mini_agent_log(find_mini_agent_log(captured_stdout), model_dir)
-            with open(case_log_path, "a", encoding="utf-8") as log_file:
-                log_file.write(_saved_log_line(saved_log))
-                log_file.write(
-                    f"\n--- mini_agent timed out after {timeout}s (exit code: killed) ---\n"
-                )
-            log(f"error: {name}: timed out after {timeout}s; log written to {case_log_path}")
-            log(f"  worktree kept at {wt_path}")
-            return 1
 
         log(f"  mini_agent exited with code {exit_code}")
         # The agent_run log is copied only after the run completes.
@@ -794,10 +759,7 @@ def process_input(
         log(f"  result: {output_path}")
         log(f"  log:    {case_log_path}")
 
-        if keep_worktrees:
-            log(f"  worktree kept at {wt_path}")
-        else:
-            remove_worktree(store_dir, wt_path)
+        remove_worktree(store_dir, wt_path)
         return exit_code if exit_code is not None else 1
 
 
@@ -832,22 +794,6 @@ def main(argv: list[str] | None = None) -> int:
         "--force",
         action="store_true",
         help="rerun cases whose output file already exists",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="clone/checkout and build the prompt, but do not run mini_agent",
-    )
-    parser.add_argument(
-        "--keep-worktrees",
-        action="store_true",
-        help="keep the per-case worktrees after the run instead of removing them",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=None,
-        help="per-case timeout in seconds for the mini_agent run (default: none)",
     )
     parser.add_argument(
         "--workers",
@@ -903,9 +849,6 @@ def main(argv: list[str] | None = None) -> int:
                     config_override_home=config_override_home,
                     subprocess_env=subprocess_env,
                     force=args.force,
-                    dry_run=args.dry_run,
-                    keep_worktrees=args.keep_worktrees,
-                    timeout=args.timeout,
                 )
                 if code != 0:
                     log(f"case {case_name(input_path)} finished with exit code {code}")
@@ -945,9 +888,6 @@ def main(argv: list[str] | None = None) -> int:
                     config_override_home=config_override_home,
                     subprocess_env=subprocess_env,
                     force=args.force,
-                    dry_run=args.dry_run,
-                    keep_worktrees=args.keep_worktrees,
-                    timeout=args.timeout,
                 ): (case_dir, input_path)
                 for case_dir, input_path in work_items
             }
