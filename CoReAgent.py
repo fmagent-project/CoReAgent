@@ -446,6 +446,12 @@ def make_config_override_home(project_root: Path, model: str) -> tuple[Path, dic
 
     env = dict(os.environ)
     env["HOME"] = str(override_home)
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(project_root)
+        if not existing_pythonpath
+        else str(project_root) + os.pathsep + existing_pythonpath
+    )
     # Keep uv's package cache from the real home so --project runs do not
     # re-download packages into the temp home.
     original_home = os.environ.get("HOME")
@@ -690,12 +696,11 @@ def process_input(
         # The agent is told to write its report here; remove any stale copy first.
         (wt_path / RESULT_FILE).unlink(missing_ok=True)
 
-        command = ["uv", "run"]
-        if config_override_home is not None:
-            # cwd/HOME become the override dir; point uv back at this project.
-            command += ["--project", str(project_root)]
-        command += [
-            "python",
+        # Reuse the interpreter running CoReAgent.  When invoked from the
+        # benchmark wrapper this is benchmark's virtualenv, so Mini-Agent
+        # does not silently switch to a second submodule environment.
+        command = [
+            sys.executable,
             "-u",  # unbuffered stdout/stderr: stream console output line by line
             "-m",
             "mini_agent.cli",

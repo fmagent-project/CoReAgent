@@ -214,6 +214,31 @@ def run(output_dir: Path) -> Path:
     return paths.result
 
 
+def run_task(
+    task_dir: Path,
+    model: str | None = None,
+    output_dir: str | None = None,
+) -> list[Path]:
+    """Judge candidates below a task directory, optionally selecting a model."""
+    task_dir = task_dir.expanduser().resolve()
+    if output_dir:
+        output_dirs = [task_dir / output_dir]
+    elif model:
+        output_dirs = [task_dir / f"CoReAgent-{model}"]
+    else:
+        output_dirs = sorted(
+            path for path in task_dir.iterdir()
+            if path.is_dir() and path.name.startswith("CoReAgent-")
+        )
+    results = []
+    for output_dir in output_dirs:
+        if any(output_dir.glob("*_output.json")):
+            results.append(run(output_dir))
+    if not results:
+        raise RuntimeError(f"no candidate output found under {task_dir}")
+    return results
+
+
 def load_llm_config() -> Any:
     """Load LLM settings from this repository's fixed config.yaml path."""
     from mini_agent.config import Config
@@ -232,22 +257,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Judge one CoReAgent output directory against its oracle."
     )
     parser.add_argument(
-        "output_dir",
+        "task_dir",
         type=Path,
-        help="directory <owner_repo>/<issuenumber>/<CoReAgent-model>",
+        help="task directory or a specific CoReAgent output directory",
     )
+    parser.add_argument("--model", help="judge only CoReAgent-<model> output")
+    # Accept CoReAgent options when evaluation forwards its argument list;
+    # they are intentionally ignored by the judge.
+    parser.add_argument("--repos-dir", type=Path)
+    parser.add_argument("--output-dir")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--workers", nargs="?")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        result_path = run(args.output_dir)
+        if any(args.task_dir.glob("*_output.json")):
+            result_path = run(args.task_dir)
+            print(result_path)
+            return 0
+        result_paths = run_task(args.task_dir, args.model, args.output_dir)
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
-    print(result_path)
+    for result_path in result_paths:
+        print(result_path)
     return 0
 
 
