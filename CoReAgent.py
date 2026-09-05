@@ -40,6 +40,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -153,9 +154,27 @@ def run_agent_streaming(
         stdout_thread.start()
         stderr_thread.start()
 
-        exit_code = proc.wait()
-        stdout_thread.join(timeout=10)
-        stderr_thread.join(timeout=10)
+        try:
+            exit_code = proc.wait()
+        except KeyboardInterrupt:
+            # Ctrl+C is delivered to the foreground process group, but make
+            # termination explicit so cleanup never races a live agent.
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+            raise
+        finally:
+            stdout_thread.join(timeout=10)
+            stderr_thread.join(timeout=10)
 
     return "".join(stdout_parts), exit_code
 
@@ -636,7 +655,7 @@ def normalize_candidate(result: Any) -> dict[str, Any]:
 # Per-case pipeline
 # ---------------------------------------------------------------------------
 
-def process_input(
+def _process_input(
     input_path: Path,
     *,
     task_dir: Path,
@@ -764,8 +783,85 @@ def process_input(
         log(f"  result: {output_path}")
         log(f"  log:    {case_log_path}")
 
-        remove_worktree(store_dir, wt_path)
         return exit_code if exit_code is not None else 1
+
+
+def _cleanup_case_resources(input_path: Path, repos_dir: Path) -> None:
+    """Remove a case worktree after success, failure, or interruption."""
+    try:
+        input_data = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    repo_url = input_data.get("repo")
+    if not isinstance(repo_url, str) or not repo_url.strip():
+        return
+
+    repo_name = repo_dir_name(repo_url)
+    store_dir = repos_dir / f"{repo_name}.git"
+    wt_path = worktree_path(repos_dir, repo_name, case_name(input_path))
+    if store_dir.is_dir() and wt_path.exists():
+        try:
+            remove_worktree(store_dir, wt_path)
+        except Exception as error:
+            log(f"warning: could not remove worktree {wt_path}: {error}")
+
+
+def process_input(
+    input_path: Path,
+    *,
+    task_dir: Path,
+    repos_dir: Path,
+    project_root: Path,
+    model: str,
+    output_dir: Path | None,
+    config_override_home: Path | None,
+    subprocess_env: dict[str, str] | None,
+    force: bool,
+) -> int:
+    """Run one case and always remove its worktree when the call returns."""
+    try:
+        return _process_input(
+            input_path,
+            task_dir=task_dir,
+            repos_dir=repos_dir,
+            project_root=project_root,
+            model=model,
+            output_dir=output_dir,
+            config_override_home=config_override_home,
+            subprocess_env=subprocess_env,
+            force=force,
+        )
+    finally:
+        _cleanup_case_resources(input_path, repos_dir)
+
+
+def _cleanup_lock_files(repos_dir: Path) -> None:
+    """Remove lock placeholders after all case workers have stopped."""
+    locks_dir = repos_dir / ".locks"
+    if not locks_dir.is_dir():
+        return
+    for lock_path in locks_dir.glob("*.lock"):
+        try:
+            lock_path.unlink()
+        except OSError as error:
+            log(f"warning: could not remove lock file {lock_path}: {error}")
+    try:
+        locks_dir.rmdir()
+    except OSError:
+        # It may contain a lock created by another evaluation process.
+        pass
+
+
+def _cleanup_all_case_resources(repos_dir: Path) -> None:
+    """Best-effort last-resort cleanup, preserving only shared ``*.git`` stores."""
+    if not repos_dir.is_dir():
+        return
+    for child in repos_dir.iterdir():
+        if child.name == ".locks" or child.name.endswith(".git"):
+            continue
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+    _cleanup_lock_files(repos_dir)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -817,6 +913,9 @@ def main(argv: list[str] | None = None) -> int:
         log(f"error: task directory not found: {task_dir}")
         return 1
     repos_dir = args.repos_dir.expanduser().resolve()
+    # Covers uncaught exceptions and KeyboardInterrupts that happen outside a
+    # case worker, while the normal per-case cleanup remains more precise.
+    atexit.register(_cleanup_all_case_resources, repos_dir)
     output_dir = args.output_dir
     project_root = Path(__file__).resolve().parent
     try:
@@ -910,6 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
         log("Done.")
         return 1 if failures else 0
     finally:
+        _cleanup_lock_files(repos_dir)
         if config_override_home is not None:
             shutil.rmtree(config_override_home, ignore_errors=True)
 
