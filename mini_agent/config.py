@@ -26,6 +26,7 @@ class LLMConfig(BaseModel):
     api_base: str = "https://api.minimax.io"
     model: str = "MiniMax-M2.5"
     provider: str = "anthropic"  # "anthropic" or "openai"
+    token_limit: int = 600000
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
@@ -125,6 +126,7 @@ class Config(BaseModel):
             api_base=data.get("api_base", "https://api.minimax.io"),
             model=data.get("model", "MiniMax-M2.5"),
             provider=data.get("provider", "anthropic"),
+            token_limit=data.get("token_limit", 600000),
             retry=retry_config,
         )
 

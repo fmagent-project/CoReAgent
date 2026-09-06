@@ -19,11 +19,12 @@
 api_key: ""  # Replace with your MiniMax API Key
 api_base: "http://120.26.130.203:3001/v1"   # Global users (default)
 # api_base: "https://api.minimaxi.com"  # China users
-model: ""
+model: "gpt-5.6-sol"
 # LLM provider: "anthropic" or "openai"
 # For MiniMax API, the suffix (/anthropic or /v1) is auto-appended based on provider.
 # For third-party APIs (e.g., https://api.siliconflow.cn/v1), api_base is used as-is.
 provider: "openai"  # Default: anthropic
+token_limit: 600000  # Context size at which message summarization is triggered
 
 # ===== Retry Configuration =====
 retry:

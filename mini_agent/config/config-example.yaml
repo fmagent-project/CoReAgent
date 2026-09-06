@@ -24,6 +24,7 @@ model: "MiniMax-M2.5"
 # For MiniMax API, the suffix (/anthropic or /v1) is auto-appended based on provider.
 # For third-party APIs (e.g., https://api.siliconflow.cn/v1), api_base is used as-is.
 provider: "anthropic"  # Default: anthropic
+token_limit: 600000  # Context size at which message summarization is triggered
 
 # ===== Retry Configuration =====
 retry:
