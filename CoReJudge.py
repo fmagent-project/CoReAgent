@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,17 @@ JUDGE_RESPONSE_FORMAT: dict[str, Any] = {
             "additionalProperties": False,
         },
     },
+}
+
+JUDGE_RETRY_ATTEMPTS = 3
+JUDGE_RETRY_DELAY_SECONDS = 3
+_RETRYABLE_ERROR_NAMES = {
+    "APIConnectionError",
+    "APITimeoutError",
+    "ConnectError",
+    "ConnectionError",
+    "ReadTimeout",
+    "TimeoutError",
 }
 
 
@@ -188,6 +200,31 @@ def call_judge(client: Any, model: str, prompt: str, provider: str) -> dict[str,
     return parse_judge_result(content)
 
 
+def is_retryable_judge_error(error: BaseException) -> bool:
+    """Return whether a judge failure is likely caused by connectivity."""
+    return (
+        isinstance(error, (ConnectionError, TimeoutError, OSError))
+        or error.__class__.__name__ in _RETRYABLE_ERROR_NAMES
+    )
+
+
+def call_judge_with_retry(
+    client: Any,
+    model: str,
+    prompt: str,
+    provider: str,
+) -> dict[str, Any]:
+    """Call the judge, retrying connection failures twice after three seconds."""
+    for attempt in range(JUDGE_RETRY_ATTEMPTS):
+        try:
+            return call_judge(client, model, prompt, provider)
+        except Exception as error:
+            if not is_retryable_judge_error(error) or attempt == JUDGE_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(JUDGE_RETRY_DELAY_SECONDS)
+    raise AssertionError("unreachable")
+
+
 def is_no_bug_candidate(candidate: Any) -> bool:
     """Return whether the candidate explicitly reports no bug."""
     return (
@@ -230,7 +267,7 @@ def run(output_dir: Path) -> Path:
         )
     else:
         client = OpenAI(api_key=config.api_key, base_url=config.api_base)
-    result = call_judge(client, config.model, prompt, provider)
+    result = call_judge_with_retry(client, config.model, prompt, provider)
     write_judge_result(paths.result, result)
     return paths.result
 
