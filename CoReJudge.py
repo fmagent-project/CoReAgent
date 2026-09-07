@@ -7,10 +7,11 @@ Usage:
 The API key, base URL, and judge model are loaded exclusively from
 mini_agent/config/config.yaml next to this script.
 
-The candidate and oracle paths are derived from the supplied output directory:
+The candidate and oracle paths are derived from the supplied output directory.
+The output directory may be nested below the case directory:
 
     <output-dir>/<owner_repo_issuenumber>_output.json
-    <output-dir>/../oracle/<owner_repo_issuenumber>_oracle.json
+    <case-dir>/oracle/<owner_repo_issuenumber>_oracle.json
 
 The result is written to:
 
@@ -76,26 +77,54 @@ class JudgePaths:
 
 
 def derive_paths(output_dir: Path) -> JudgePaths:
-    """Derive all case paths from <owner_repo>/<issue>/<model-dir>."""
+    """Derive case paths from an output directory nested below a case."""
     output_dir = output_dir.expanduser().resolve()
     if not output_dir.is_dir():
         raise RuntimeError(f"output directory does not exist: {output_dir}")
 
-    issue_dir = output_dir.parent
-    owner_repo_dir = issue_dir.parent
-    if not issue_dir.name or not owner_repo_dir.name:
+    candidates = sorted(output_dir.glob("*_output.json"))
+    if len(candidates) != 1:
         raise RuntimeError(
-            "output directory must have the form "
-            "<owner_repo>/<issuenumber>/<CoReAgent-model>"
+            f"expected exactly one candidate output under {output_dir}, "
+            f"found {len(candidates)}"
+        )
+    candidate = candidates[0]
+    case_name = candidate.name.removesuffix("_output.json")
+
+    oracle = None
+    for parent in output_dir.parents:
+        candidate_oracle = parent / "oracle" / f"{case_name}_oracle.json"
+        if candidate_oracle.is_file():
+            oracle = candidate_oracle
+            break
+    if oracle is None:
+        raise RuntimeError(
+            f"oracle file not found in any parent case directory for {candidate}"
         )
 
-    case_name = f"{owner_repo_dir.name}_{issue_dir.name}"
     return JudgePaths(
         output_dir=output_dir,
-        candidate=output_dir / f"{case_name}_output.json",
-        oracle=issue_dir / "oracle" / f"{case_name}_oracle.json",
+        candidate=candidate,
+        oracle=oracle,
         result=output_dir / f"{case_name}_judge.json",
     )
+
+
+def output_dir_path(value: str) -> Path:
+    """Parse --output-dir as a safe path relative to each case directory."""
+    path = Path(value)
+    parts = value.split("/")
+    if (
+        not value
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in parts)
+        or "\\" in value
+    ):
+        raise argparse.ArgumentTypeError(
+            "--output-dir must be a relative path without '.' or '..' components, "
+            "such as 'CoReAgent-model/run1'; absolute paths are not supported"
+        )
+    return path
 
 
 def read_json(path: Path, label: str) -> Any:
@@ -275,7 +304,7 @@ def run(output_dir: Path) -> Path:
 def run_task(
     task_dir: Path,
     model: str | None = None,
-    output_dir: str | None = None,
+    output_dir: Path | None = None,
 ) -> list[Path]:
     """Judge candidates below a task directory, optionally selecting a model."""
     task_dir = task_dir.expanduser().resolve()
@@ -323,7 +352,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Accept CoReAgent options when evaluation forwards its argument list;
     # they are intentionally ignored by the judge.
     parser.add_argument("--repos-dir", type=Path)
-    parser.add_argument("--output-dir")
+    parser.add_argument("--output-dir", type=output_dir_path)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--workers", nargs="?")
     return parser.parse_args(argv)

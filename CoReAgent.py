@@ -215,19 +215,18 @@ def check_environment() -> None:
 
 
 def output_dir_name(value: str) -> Path:
-    """Parse --output-dir as one directory name, never as a path."""
+    """Parse --output-dir as a safe path relative to each case directory."""
     path = Path(value)
+    parts = value.split("/")
     if (
         not value
-        or value in {".", ".."}
-        or "/" in value
-        or "\\" in value
         or path.is_absolute()
-        or len(path.parts) != 1
+        or any(part in {"", ".", ".."} for part in parts)
+        or "\\" in value
     ):
         raise argparse.ArgumentTypeError(
-            "--output-dir must be a single directory name, such as 'results'; "
-            "absolute and multi-level paths are not supported"
+            "--output-dir must be a relative path without '.' or '..' components, "
+            "such as 'CoReAgent-model/run1'; absolute paths are not supported"
         )
     return path
 
@@ -888,8 +887,8 @@ def main(argv: list[str] | None = None) -> int:
         type=output_dir_name,
         default=None,
         help="directory for result and log files (default: "
-        "<case_dir>/CoReAgent-<model>); must be a single directory name and is "
-        "created under each case directory",
+        "<case_dir>/CoReAgent-<model>); a relative path created under each "
+        "case directory",
     )
     parser.add_argument(
         "--force",
