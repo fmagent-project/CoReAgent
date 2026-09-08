@@ -339,8 +339,18 @@ def run_task(
     candidate_dirs = [
         path for path in output_dirs if any(path.glob("*_output.json"))
     ]
+    for path in output_dirs:
+        if path not in candidate_dirs:
+            print(
+                f"skipping {path}: no *_output.json candidate output",
+                file=sys.stderr,
+            )
     if not candidate_dirs:
-        raise RuntimeError(f"no candidate output found under {task_dir}")
+        print(
+            f"warning: no candidate output found under {task_dir}; nothing to judge",
+            file=sys.stderr,
+        )
+        return []
     if workers is None:
         return [run(path, force=force) for path in candidate_dirs]
 
