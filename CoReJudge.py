@@ -24,6 +24,7 @@ import argparse
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -270,8 +271,10 @@ def write_judge_result(path: Path, result: dict[str, Any]) -> None:
     )
 
 
-def run(output_dir: Path) -> Path:
+def run(output_dir: Path, *, force: bool = False) -> Path:
     paths = derive_paths(output_dir)
+    if paths.result.is_file() and not force:
+        return paths.result
     candidate = read_json(paths.candidate, "candidate")
 
     # A normalized no-bug report is unambiguously a semantic non-match. Handle
@@ -305,25 +308,47 @@ def run_task(
     task_dir: Path,
     model: str | None = None,
     output_dir: Path | None = None,
+    *,
+    force: bool = False,
+    workers: int | None = None,
 ) -> list[Path]:
-    """Judge candidates below a task directory, optionally selecting a model."""
+    """Judge candidates below task_dir/<owner_repo>/<issue>/CoReAgent-*.
+
+    The task directory mode intentionally searches exactly two case-directory
+    levels below ``task_dir`` before selecting an Agent output directory.
+    """
     task_dir = task_dir.expanduser().resolve()
     if output_dir:
-        output_dirs = [task_dir / output_dir]
+        pattern = f"*/*/{output_dir.as_posix()}"
+        output_dirs = sorted(
+            path for path in task_dir.glob(pattern) if path.is_dir()
+        )
     elif model:
-        output_dirs = [task_dir / f"CoReAgent-{model}"]
+        output_dirs = sorted(
+            path
+            for path in task_dir.glob(f"*/*/CoReAgent-{model}")
+            if path.is_dir()
+        )
     else:
         output_dirs = sorted(
-            path for path in task_dir.iterdir()
-            if path.is_dir() and path.name.startswith("CoReAgent-")
+            path for path in task_dir.glob("*/*/CoReAgent-*")
+            if path.is_dir()
         )
-    results = []
-    for output_dir in output_dirs:
-        if any(output_dir.glob("*_output.json")):
-            results.append(run(output_dir))
-    if not results:
+    if workers is not None and workers < 1:
+        raise RuntimeError("--workers must be at least 1")
+    candidate_dirs = [
+        path for path in output_dirs if any(path.glob("*_output.json"))
+    ]
+    if not candidate_dirs:
         raise RuntimeError(f"no candidate output found under {task_dir}")
-    return results
+    if workers is None:
+        return [run(path, force=force) for path in candidate_dirs]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(run, path, force=force): path for path in candidate_dirs
+        }
+        return [future.result() for future in as_completed(futures)]
 
 
 def load_llm_config() -> Any:
@@ -350,11 +375,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--model", help="judge only CoReAgent-<model> output")
     # Accept CoReAgent options when evaluation forwards its argument list;
-    # they are intentionally ignored by the judge.
+    # --force and --workers affect judge behavior; other options are accepted
+    # only for compatibility with evaluation.py forwarding.
     parser.add_argument("--repos-dir", type=Path)
     parser.add_argument("--output-dir", type=output_dir_path)
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--workers", nargs="?")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        nargs="?",
+        const=4,
+        default=None,
+        help="run cases concurrently with up to N workers (default 4 when omitted)",
+    )
     return parser.parse_args(argv)
 
 
@@ -362,10 +395,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         if any(args.task_dir.glob("*_output.json")):
-            result_path = run(args.task_dir)
+            result_path = run(args.task_dir, force=args.force)
             print(result_path)
             return 0
-        result_paths = run_task(args.task_dir, args.model, args.output_dir)
+        result_paths = run_task(
+            args.task_dir,
+            args.model,
+            args.output_dir,
+            force=args.force,
+            workers=args.workers,
+        )
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
