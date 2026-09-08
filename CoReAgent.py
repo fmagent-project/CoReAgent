@@ -4,7 +4,7 @@
 For each input file under <task_dir>/input/*_input.json this script:
   1. maintains a shared bare git store per repository under .repos/
      (cloned once, reused across cases), and checks out a dedicated git
-     worktree per case at buggy_commit;
+     worktree per case and model at buggy_commit;
   2. builds a bug-finding prompt (template loaded from CoReAgent.md) from the
      input's call_graph and graph_spec;
   3. runs `uv run python -m mini_agent.cli --workspace <worktree> --task <prompt>`
@@ -15,16 +15,17 @@ For each input file under <task_dir>/input/*_input.json this script:
      (~/.mini-agent/log/agent_run_*.log) into the same directory under its
      original filename.
 
-Concurrency: multiple cases may run in parallel. Each case gets its own
-worktree (so checkouts and the agent's file reads never interfere), and all
-metadata operations on a shared store (clone/fetch/worktree add/remove) are
-serialized with advisory file locks under .repos/.locks/.
+Concurrency: multiple cases may run in parallel, and different models may run
+the same case concurrently. Each (case, model) pair gets its own worktree and
+its own per-case lock (so checkouts and the agent's file reads never
+interfere), while metadata operations on a shared store (clone/fetch/worktree
+add/remove) are serialized with advisory file locks under .repos/.locks/.
 
 Layout example:
-    .repos/django_django.git            # bare blobless store (shared)
-    .repos/django_django_26552/         # per-case worktree (<owner_repo>_<issuenumber>)
-    .repos/.locks/django_django.lock    # store lock
-    .repos/.locks/django_django_26552.lock       # per-case lock
+    .repos/django_django.git                    # bare blobless store (shared)
+    .repos/django_django_26552_gpt-4o/          # per-case, per-model worktree
+    .repos/.locks/django_django.lock            # store lock (shared)
+    .repos/.locks/django_django_26552.gpt-4o.lock  # per-case, per-model lock
 
 Multiple-case mode: with --workers [N] (N defaults to 4), DIR is an
 <owner_repo> directory (e.g. CoRe_bench_lite/django_django) or a <benchmark>
@@ -62,6 +63,14 @@ except ImportError:  # pragma: no cover - Windows
 
 # The result file the agent is instructed to write inside its workspace.
 RESULT_FILE = "core_result.json"
+
+# Worktrees created by this process. The atexit cleanup removes only these,
+# so a concurrent evaluation sharing the same repos dir is never disturbed.
+_CREATED_WORKTREES: set[Path] = set()
+
+MAX_STEPS_EXHAUSTED_RE = re.compile(
+    r"Task couldn't be completed after \d+ steps\."
+)
 
 NO_BUG_MESSAGE = (
     "No source-grounded bug candidate was reported within the provided call graph scope."
@@ -357,15 +366,22 @@ def ensure_store(repo_url: str, commit: str, repos_dir: Path) -> Path:
     return store_dir
 
 
-def worktree_path(repos_dir: Path, repo_name: str, name: str) -> Path:
-    """Per-case worktree path: .repos/<owner_repo>_<issuenumber>.
+def model_token(model: str) -> str:
+    """Filesystem-safe token for a model name in worktree and lock paths."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", model)
+
+
+def worktree_path(repos_dir: Path, repo_name: str, name: str, model: str) -> Path:
+    """Per-case, per-model worktree path: .repos/<owner_repo>_<issuenumber>_<model>.
 
     The case name normally already carries the owner_repo prefix (e.g.
     django_django_26552), so the prefix is stripped to avoid repeating it.
+    The model token is appended so different models checking out the same
+    case do not share (and thus fight over) a single worktree directory.
     """
     if name.startswith(repo_name + "_"):
         name = name[len(repo_name) + 1:]
-    return repos_dir / f"{repo_name}_{name}"
+    return repos_dir / f"{repo_name}_{name}_{model_token(model)}"
 
 
 def ensure_worktree(store_dir: Path, commit: str, wt_path: Path) -> None:
@@ -394,10 +410,12 @@ def ensure_worktree(store_dir: Path, commit: str, wt_path: Path) -> None:
     checked_out = head.stdout.strip()
     if checked_out != commit:
         raise RuntimeError(f"checked out {checked_out}, expected {commit}")
+    _CREATED_WORKTREES.add(wt_path)
 
 
 def remove_worktree(store_dir: Path, wt_path: Path) -> None:
     """Remove the per-case worktree (serialized by the store lock)."""
+    _CREATED_WORKTREES.discard(wt_path)
     with file_lock(store_lock_path(store_dir.parent, store_dir.name[: -len(".git")])):
         if not wt_path.exists():
             return
@@ -551,6 +569,16 @@ def save_mini_agent_log(log_path: str | None, model_dir: Path) -> Path | None:
     shutil.copyfile(source, dest)
     return dest
 
+
+def is_max_steps_exhausted(case_log_path: Path, captured_stdout: str) -> bool:
+    """Return whether the agent reported exhausting its configured steps."""
+    try:
+        log_text = case_log_path.read_text(encoding="utf-8")
+    except OSError:
+        log_text = captured_stdout
+    return MAX_STEPS_EXHAUSTED_RE.search(log_text) is not None
+
+
 def _find_json_objects(text: str) -> list[Any]:
     """Find every JSON value in the text, preferring objects that mention bug_func."""
     results: list[Any] = []
@@ -684,7 +712,7 @@ def _process_input(
 
     # The per-case lock spans the whole run so the same case launched twice
     # concurrently does not double-execute or write the same outputs.
-    with file_lock(repos_dir / ".locks" / f"{name}.lock"):
+    with file_lock(repos_dir / ".locks" / f"{name}.{model_token(model)}.lock"):
         if output_dir is None:
             model_dir = task_dir / f"CoReAgent-{model}"
         else:
@@ -704,7 +732,7 @@ def _process_input(
 
         try:
             store_dir = ensure_store(repo_url, buggy_commit, repos_dir)
-            wt_path = worktree_path(repos_dir, repo_dir_name(repo_url), name)
+            wt_path = worktree_path(repos_dir, repo_dir_name(repo_url), name, model)
             ensure_worktree(store_dir, buggy_commit, wt_path)
             prompt = build_prompt(input_data)
         except RuntimeError as error:
@@ -765,18 +793,28 @@ def _process_input(
             candidate = normalize_candidate(result)
             result_text = json.dumps(candidate, indent=2, ensure_ascii=False)
         except (RuntimeError, ValueError) as error:
-            # A missing or invalid agent report indicates an unsuccessful run
-            # (including exhausted LLM retries).  Do not manufacture an empty
-            # candidate, since that would look like a valid benchmark result.
-            log(f"  error: {name}: {error}; output not written")
-            output_path.unlink(missing_ok=True)
-            with open(case_log_path, "a", encoding="utf-8") as log_file:
-                log_file.write(
-                    f"\n--- mini_agent exited with code {exit_code} ---\n"
-                    "\n--- result ---\n"
-                    "Agent report unavailable; no output.json was written.\n"
+            if is_max_steps_exhausted(case_log_path, captured_stdout):
+                # Reaching max_steps is a valid, non-retry outcome. Preserve
+                # the historical empty-candidate output for this case.
+                result_text = json.dumps(
+                    {"bug_func": [], "bug_desc": NO_BUG_MESSAGE},
+                    indent=2,
+                    ensure_ascii=False,
                 )
-            return exit_code if exit_code not in (None, 0) else 1
+                log(f"  warning: {name}: {error}; wrote empty candidate")
+            else:
+                # A missing report without the max-steps marker indicates a
+                # failed LLM call (including exhausted retries). Do not make
+                # it look like a valid benchmark result.
+                log(f"  error: {name}: {error}; output not written")
+                output_path.unlink(missing_ok=True)
+                with open(case_log_path, "a", encoding="utf-8") as log_file:
+                    log_file.write(
+                        f"\n--- mini_agent exited with code {exit_code} ---\n"
+                        "\n--- result ---\n"
+                        "Agent report unavailable; no output.json was written.\n"
+                    )
+                return exit_code if exit_code not in (None, 0) else 1
 
         output_path.write_text(result_text + "\n", encoding="utf-8")
         with open(case_log_path, "a", encoding="utf-8") as log_file:
@@ -793,7 +831,7 @@ def _process_input(
         return exit_code if exit_code is not None else 1
 
 
-def _cleanup_case_resources(input_path: Path, repos_dir: Path) -> None:
+def _cleanup_case_resources(input_path: Path, repos_dir: Path, model: str) -> None:
     """Remove a case worktree after success, failure, or interruption."""
     try:
         input_data = json.loads(input_path.read_text(encoding="utf-8"))
@@ -805,7 +843,7 @@ def _cleanup_case_resources(input_path: Path, repos_dir: Path) -> None:
 
     repo_name = repo_dir_name(repo_url)
     store_dir = repos_dir / f"{repo_name}.git"
-    wt_path = worktree_path(repos_dir, repo_name, case_name(input_path))
+    wt_path = worktree_path(repos_dir, repo_name, case_name(input_path), model)
     if store_dir.is_dir() and wt_path.exists():
         try:
             remove_worktree(store_dir, wt_path)
@@ -839,36 +877,19 @@ def process_input(
             force=force,
         )
     finally:
-        _cleanup_case_resources(input_path, repos_dir)
+        _cleanup_case_resources(input_path, repos_dir, model)
 
 
-def _cleanup_lock_files(repos_dir: Path) -> None:
-    """Remove lock placeholders after all case workers have stopped."""
-    locks_dir = repos_dir / ".locks"
-    if not locks_dir.is_dir():
-        return
-    for lock_path in locks_dir.glob("*.lock"):
-        try:
-            lock_path.unlink()
-        except OSError as error:
-            log(f"warning: could not remove lock file {lock_path}: {error}")
-    try:
-        locks_dir.rmdir()
-    except OSError:
-        # It may contain a lock created by another evaluation process.
-        pass
+def _cleanup_all_case_resources() -> None:
+    """Best-effort last-resort cleanup of this process's own worktrees.
 
-
-def _cleanup_all_case_resources(repos_dir: Path) -> None:
-    """Best-effort last-resort cleanup, preserving only shared ``*.git`` stores."""
-    if not repos_dir.is_dir():
-        return
-    for child in repos_dir.iterdir():
-        if child.name == ".locks" or child.name.endswith(".git"):
-            continue
-        if child.is_dir():
-            shutil.rmtree(child, ignore_errors=True)
-    _cleanup_lock_files(repos_dir)
+    Only worktrees created by this process are removed, so a concurrent
+    evaluation sharing the same repos dir is never disturbed. Shared
+    ``*.git`` stores and lock files are left in place.
+    """
+    for wt_path in list(_CREATED_WORKTREES):
+        shutil.rmtree(wt_path, ignore_errors=True)
+    _CREATED_WORKTREES.clear()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -922,7 +943,7 @@ def main(argv: list[str] | None = None) -> int:
     repos_dir = args.repos_dir.expanduser().resolve()
     # Covers uncaught exceptions and KeyboardInterrupts that happen outside a
     # case worker, while the normal per-case cleanup remains more precise.
-    atexit.register(_cleanup_all_case_resources, repos_dir)
+    atexit.register(_cleanup_all_case_resources)
     output_dir = args.output_dir
     project_root = Path(__file__).resolve().parent
     try:
@@ -1016,7 +1037,6 @@ def main(argv: list[str] | None = None) -> int:
         log("Done.")
         return 1 if failures else 0
     finally:
-        _cleanup_lock_files(repos_dir)
         if config_override_home is not None:
             shutil.rmtree(config_override_home, ignore_errors=True)
 
