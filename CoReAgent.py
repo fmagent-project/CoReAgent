@@ -765,10 +765,18 @@ def _process_input(
             candidate = normalize_candidate(result)
             result_text = json.dumps(candidate, indent=2, ensure_ascii=False)
         except (RuntimeError, ValueError) as error:
-            result_text = json.dumps(
-                {"bug_func": [], "bug_desc": NO_BUG_MESSAGE}, indent=2, ensure_ascii=False
-            )
-            log(f"  warning: {name}: {error}; wrote empty candidate")
+            # A missing or invalid agent report indicates an unsuccessful run
+            # (including exhausted LLM retries).  Do not manufacture an empty
+            # candidate, since that would look like a valid benchmark result.
+            log(f"  error: {name}: {error}; output not written")
+            output_path.unlink(missing_ok=True)
+            with open(case_log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(
+                    f"\n--- mini_agent exited with code {exit_code} ---\n"
+                    "\n--- result ---\n"
+                    "Agent report unavailable; no output.json was written.\n"
+                )
+            return exit_code if exit_code not in (None, 0) else 1
 
         output_path.write_text(result_text + "\n", encoding="utf-8")
         with open(case_log_path, "a", encoding="utf-8") as log_file:
