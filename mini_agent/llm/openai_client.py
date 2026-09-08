@@ -65,6 +65,7 @@ class OpenAIClient(LLMClientBase):
         params = {
             "model": self.model,
             "messages": api_messages,
+            "max_completion_tokens": 32768,
             # Enable reasoning_split to separate thinking content
             "extra_body": {"reasoning_split": True},
         }
