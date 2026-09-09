@@ -312,26 +312,33 @@ def run_task(
     force: bool = False,
     workers: int | None = None,
 ) -> list[Path]:
-    """Judge candidates below task_dir/<owner_repo>/<issue>/CoReAgent-*.
+    """Judge candidates below a task or single-case directory.
 
-    The task directory mode intentionally searches exactly two case-directory
-    levels below ``task_dir`` before selecting an Agent output directory.
+    A single case directory (one containing ``input/`` or ``oracle/``) keeps
+    its agent output directly beneath it, so only that case is judged. A task
+    directory (a benchmark root or an <owner_repo> directory) holds case
+    directories two levels down (<owner_repo>/<issue>), so every case found
+    under it is judged.
     """
     task_dir = task_dir.expanduser().resolve()
+    if (task_dir / "input").is_dir() or (task_dir / "oracle").is_dir():
+        prefix = ""  # single case: output lives directly under the case dir
+    else:
+        prefix = "*/*/"  # task dir: output lives under <owner_repo>/<issue>/
     if output_dir:
-        pattern = f"*/*/{output_dir.as_posix()}"
+        pattern = f"{prefix}{output_dir.as_posix()}"
         output_dirs = sorted(
             path for path in task_dir.glob(pattern) if path.is_dir()
         )
     elif model:
         output_dirs = sorted(
             path
-            for path in task_dir.glob(f"*/*/CoReAgent-{model}")
+            for path in task_dir.glob(f"{prefix}CoReAgent-{model}")
             if path.is_dir()
         )
     else:
         output_dirs = sorted(
-            path for path in task_dir.glob("*/*/CoReAgent-*")
+            path for path in task_dir.glob(f"{prefix}CoReAgent-*")
             if path.is_dir()
         )
     if workers is not None and workers < 1:
