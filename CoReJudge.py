@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Judge a CoReAgent result against its oracle with an OpenAI model.
+"""Judge a CoReAgent result against its oracle by a three-model majority.
 
 Usage:
     uv run python CoReJudge.py <owner_repo>/<issuenumber>/<CoReAgent-model>
 
-The API key, base URL, and judge model are loaded exclusively from
+The API key, base URL, and judge_model1/2/3 are loaded exclusively from
 mini_agent/config/config.yaml next to this script.
 
 The candidate and oracle paths are derived from the supplied output directory.
@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
+import yaml
 from openai import BadRequestError, OpenAI
 
 
@@ -58,6 +59,7 @@ JUDGE_RESPONSE_FORMAT: dict[str, Any] = {
 }
 
 JUDGE_RETRY_ATTEMPTS = 3
+JUDGE_MODEL_FIELDS = ("judge_model1", "judge_model2", "judge_model3")
 JUDGE_RETRY_DELAY_SECONDS = 3
 _RETRYABLE_ERROR_NAMES = {
     "APIConnectionError",
@@ -67,6 +69,16 @@ _RETRYABLE_ERROR_NAMES = {
     "ReadTimeout",
     "TimeoutError",
 }
+
+
+@dataclass(frozen=True)
+class JudgeConfig:
+    api_key: str
+    api_base: str
+    provider: str
+    judge_model1: str
+    judge_model2: str
+    judge_model3: str
 
 
 @dataclass(frozen=True)
@@ -271,10 +283,37 @@ def write_judge_result(path: Path, result: dict[str, Any]) -> None:
     )
 
 
+def combine_judge_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep each judge's verdict and require at least two matching votes."""
+    if len(results) != len(JUDGE_MODEL_FIELDS):
+        raise RuntimeError("expected exactly three judge results")
+    combined = dict(zip(JUDGE_MODEL_FIELDS, results))
+    combined["pass"] = sum(result["match"] for result in results) >= 2
+    return combined
+
+
+def is_majority_judge_result(result: Any) -> bool:
+    """Recognize complete majority results before reusing a cached verdict."""
+    if not isinstance(result, dict) or set(result) != {*JUDGE_MODEL_FIELDS, "pass"}:
+        return False
+    try:
+        results = [
+            parse_judge_result(json.dumps(result[field]))
+            for field in JUDGE_MODEL_FIELDS
+        ]
+    except RuntimeError:
+        return False
+    return (
+        isinstance(result["pass"], bool)
+        and result["pass"] == combine_judge_results(results)["pass"]
+    )
+
+
 def run(output_dir: Path, *, force: bool = False) -> Path:
     paths = derive_paths(output_dir)
     if paths.result.is_file() and not force:
-        return paths.result
+        if is_majority_judge_result(read_json(paths.result, "judge result")):
+            return paths.result
     candidate = read_json(paths.candidate, "candidate")
 
     # A normalized no-bug report is unambiguously a semantic non-match. Handle
@@ -283,7 +322,10 @@ def run(output_dir: Path, *, force: bool = False) -> Path:
     if is_no_bug_candidate(candidate):
         write_judge_result(
             paths.result,
-            {"match": False, "reason": NO_BUG_MESSAGE},
+            combine_judge_results([
+                {"match": False, "reason": NO_BUG_MESSAGE}
+                for _ in JUDGE_MODEL_FIELDS
+            ]),
         )
         return paths.result
 
@@ -299,7 +341,11 @@ def run(output_dir: Path, *, force: bool = False) -> Path:
         )
     else:
         client = OpenAI(api_key=config.api_key, base_url=config.api_base)
-    result = call_judge_with_retry(client, config.model, prompt, provider)
+    results = [
+        call_judge_with_retry(client, getattr(config, field), prompt, provider)
+        for field in JUDGE_MODEL_FIELDS
+    ]
+    result = combine_judge_results(results)
     write_judge_result(paths.result, result)
     return paths.result
 
@@ -368,17 +414,32 @@ def run_task(
         return [future.result() for future in as_completed(futures)]
 
 
-def load_llm_config() -> Any:
-    """Load LLM settings from this repository's fixed config.yaml path."""
-    from mini_agent.config import Config
-
+def load_llm_config() -> JudgeConfig:
+    """Read judge settings directly from the fixed config.yaml path."""
     try:
-        config = Config.from_yaml(CONFIG_PATH).llm
+        data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception as error:
         raise RuntimeError(f"could not load LLM config {CONFIG_PATH}: {error}") from error
-    if not config.model.strip():
-        raise RuntimeError(f"judge model is empty in {CONFIG_PATH}")
-    return config
+    if not isinstance(data, dict):
+        raise RuntimeError(f"LLM config must be a YAML mapping in {CONFIG_PATH}")
+    settings = {
+        "api_key": data.get("api_key", ""),
+        "api_base": data.get("api_base", "https://api.minimax.io"),
+        "provider": data.get("provider", "anthropic"),
+        **{field: data.get(field, "") for field in JUDGE_MODEL_FIELDS},
+    }
+    for field, value in settings.items():
+        if not isinstance(value, str):
+            raise RuntimeError(f"{field} must be a string in {CONFIG_PATH}")
+        settings[field] = value.strip()
+        if not settings[field]:
+            raise RuntimeError(f"{field} is empty in {CONFIG_PATH}")
+    if settings["api_key"] == "YOUR_API_KEY_HERE":
+        raise RuntimeError(f"please configure a valid API key in {CONFIG_PATH}")
+    models = [settings[field] for field in JUDGE_MODEL_FIELDS]
+    if len(set(models)) != len(models):
+        raise RuntimeError(f"judge_model1/2/3 must be different in {CONFIG_PATH}")
+    return JudgeConfig(**settings)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
