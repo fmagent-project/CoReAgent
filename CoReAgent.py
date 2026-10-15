@@ -439,6 +439,8 @@ def get_model_name() -> str:
         config_path = Config.get_default_config_path()
         config = Config.from_yaml(config_path)
         return config.llm.model
+    except FileNotFoundError as error:
+        raise RuntimeError(str(error)) from error
     except Exception as error:  # fall back to a naive YAML scan
         config_path = Path(__file__).parent / "mini_agent" / "config" / "config.yaml"
         if config_path.exists():

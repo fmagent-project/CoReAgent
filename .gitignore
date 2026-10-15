@@ -45,7 +45,7 @@ workspace/
 Thumbs.db
 
 # Config (contains API keys)
-# config.yaml
+config.yaml
 mcp.json
 
 # test file

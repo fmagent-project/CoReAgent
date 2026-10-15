@@ -418,6 +418,12 @@ def load_llm_config() -> JudgeConfig:
     """Read judge settings directly from the fixed config.yaml path."""
     try:
         data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            f"Configuration file not found: {CONFIG_PATH}. "
+            f"Copy {CONFIG_PATH.with_name('config-example.yaml')} to "
+            f"{CONFIG_PATH} and configure your API key and judge_model1/2/3."
+        ) from error
     except Exception as error:
         raise RuntimeError(f"could not load LLM config {CONFIG_PATH}: {error}") from error
     if not isinstance(data, dict):
