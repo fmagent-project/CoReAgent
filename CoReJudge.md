@@ -13,14 +13,15 @@ Judge according to these rules:
    as the symptom, impact, or trigger condition.
 6. Do not reject a correct partial bug description solely because it does not match
    every oracle field.
-7. If the candidate describes multiple distinct bugs, evaluate each bug independently
+7. The candidate object contains a `bugs` array. Evaluate each item independently
    and set `match` to true when at least one of them correctly identifies the oracle
-   bug. Other candidate bugs do not also need to match the oracle.
+   bug. Other candidate bugs do not also need to match the oracle. Never combine
+   claims from different items to construct a matching root cause.
 8. Set `match` to false only when none of the candidate bugs establishes the oracle
    bug's causal mechanism because every stated root cause is wrong, materially
    contradicts the oracle, or is too vague.
 
-Candidate description:
+Candidate bugs (`bugs: []` means no candidate and must yield `match: false`):
 
 ```json
 {{CANDIDATE_DESCRIPTION_JSON}}

@@ -34,6 +34,12 @@ import yaml
 from openai import BadRequestError, OpenAI
 
 
+try:
+    from .CoReAgent import normalize_candidate
+except ImportError:  # Direct execution as CoReJudge.py.
+    from CoReAgent import normalize_candidate
+
+
 CONFIG_PATH = Path(__file__).parent / "mini_agent" / "config" / "config.yaml"
 CANDIDATE_PLACEHOLDER = "{{CANDIDATE_DESCRIPTION_JSON}}"
 ORACLE_PLACEHOLDER = "{{JUDGE_ORACLE_JSON}}"
@@ -269,11 +275,20 @@ def call_judge_with_retry(
 
 def is_no_bug_candidate(candidate: Any) -> bool:
     """Return whether the candidate explicitly reports no bug."""
-    return (
-        isinstance(candidate, dict)
-        and candidate.get("bug_func") == []
-        and candidate.get("bug_desc") == NO_BUG_MESSAGE
-    )
+    return isinstance(candidate, dict) and candidate == {"bugs": []}
+
+
+def judge_candidates(
+    client: Any, model: str, prompts: list[str], provider: str,
+) -> dict[str, Any]:
+    """A judge votes yes as soon as any independent candidate matches."""
+    reasons = []
+    for index, prompt in enumerate(prompts):
+        verdict = call_judge_with_retry(client, model, prompt, provider)
+        reasons.append(f"bugs[{index}]: {verdict['reason']}")
+        if verdict["match"]:
+            return {"match": True, "reason": reasons[-1]}
+    return {"match": False, "reason": "\n".join(reasons)}
 
 
 def write_judge_result(path: Path, result: dict[str, Any]) -> None:
@@ -314,7 +329,7 @@ def run(output_dir: Path, *, force: bool = False) -> Path:
     if paths.result.is_file() and not force:
         if is_majority_judge_result(read_json(paths.result, "judge result")):
             return paths.result
-    candidate = read_json(paths.candidate, "candidate")
+    candidate = normalize_candidate(read_json(paths.candidate, "candidate"))
 
     # A normalized no-bug report is unambiguously a semantic non-match. Handle
     # it before reading the oracle or loading API configuration so this path
@@ -330,7 +345,7 @@ def run(output_dir: Path, *, force: bool = False) -> Path:
         return paths.result
 
     oracle = read_json(paths.oracle, "oracle")
-    prompt = build_prompt(candidate, oracle)
+    prompts = [build_prompt({"bugs": [bug]}, oracle) for bug in candidate["bugs"]]
     config = load_llm_config()
     provider = config.provider.lower()
     if provider == "anthropic":
@@ -342,7 +357,7 @@ def run(output_dir: Path, *, force: bool = False) -> Path:
     else:
         client = OpenAI(api_key=config.api_key, base_url=config.api_base)
     results = [
-        call_judge_with_retry(client, getattr(config, field), prompt, provider)
+        judge_candidates(client, getattr(config, field), prompts, provider)
         for field in JUDGE_MODEL_FIELDS
     ]
     result = combine_judge_results(results)

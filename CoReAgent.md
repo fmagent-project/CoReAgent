@@ -23,12 +23,16 @@ Final report (mandatory):
 2. End your last reply with exactly that same raw JSON object and no other text.
 
 Report format:
-{"bug_func": ["<id from call_graph.nodes>"], "bug_desc": "<one-paragraph description of the bug and how it is triggered>"}
+{"bugs": [{"bug_func": ["<id from call_graph.nodes>"], "bug_desc": "<description of this bug and how it is triggered>"}]}
 
-If multiple distinct bugs are identified, include all directly faulty function IDs in the shared `bug_func` field and describe each bug separately in the shared `bug_desc` field as `bug1: <description of bug 1>. bug2: <description of bug 2>.`
+Return only the `bugs` field. Each distinct bug must be a separate array item
+containing exactly `bug_func` and `bug_desc`. Each item must have a non-empty
+array of directly faulty function IDs and a non-empty description. A single
+bug may involve multiple functions; keep those functions in the same item.
+Never merge independent bugs into a shared description or function list.
 
 If no bug can be identified:
-{"bug_func": [], "bug_desc": "No source-grounded bug candidate was reported within the provided call graph scope."}
+{"bugs": []}
 
 Report only functions in call_graph.nodes that directly contain a faulty operation or decision. Do not report propagation-only callers.
 

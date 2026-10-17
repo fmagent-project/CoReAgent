@@ -582,31 +582,21 @@ def is_max_steps_exhausted(case_log_path: Path, captured_stdout: str) -> bool:
 
 
 def _find_json_objects(text: str) -> list[Any]:
-    """Find every JSON value in the text, preferring objects that mention bug_func."""
+    """Decode complete JSON objects in order without extracting nested bugs."""
     results: list[Any] = []
-    for match in re.finditer(
-        r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL
-    ):
-        try:
-            results.append(json.loads(match.group(1).strip()))
-        except json.JSONDecodeError:
-            pass
-    # Single-level objects containing bug_func (evidence arrays are fine here).
-    for match in re.finditer(r"\{[^{}]*?\"bug_func\"[^{}]*?\}", text, flags=re.DOTALL):
-        try:
-            results.append(json.loads(match.group(0)))
-        except json.JSONDecodeError:
-            pass
-    # Brace-matched decode from the nearest '{' before each "bug_func" mention,
-    # which handles nested JSON that the flat regex misses.
     decoder = json.JSONDecoder()
-    for match in re.finditer(r"\"bug_func\"", text):
-        start = text.rfind("{", max(0, match.start() - 2000), match.start())
-        if start >= 0:
-            try:
-                results.append(decoder.raw_decode(text[start:])[0])
-            except json.JSONDecodeError:
-                pass
+    position = 0
+    while position < len(text):
+        start = text.find("{", position)
+        if start < 0:
+            break
+        try:
+            value, length = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            position = start + 1
+            continue
+        results.append(value)
+        position = start + length
     return results
 
 
@@ -638,7 +628,7 @@ def extract_result(wt_path: Path, captured_stdout: str) -> dict[str, Any]:
 
     Preference order:
       1. <wt_path>/core_result.json written by the agent (instructed in prompt);
-      2. the last JSON object mentioning bug_func in the captured stdout.
+      2. the last JSON object containing bugs in the captured stdout.
     """
     result_file = wt_path / RESULT_FILE
     if result_file.is_file():
@@ -648,7 +638,7 @@ def extract_result(wt_path: Path, captured_stdout: str) -> dict[str, Any]:
             log(f"Warning: could not parse {result_file}: {error}")
     for candidate in reversed(_find_json_objects(strip_ansi(captured_stdout))):
         if isinstance(candidate, dict) and (
-            "bug_func" in candidate or "result" in candidate
+            "bugs" in candidate or "result" in candidate
         ):
             return candidate
     raise RuntimeError(
@@ -662,22 +652,25 @@ def normalize_candidate(result: Any) -> dict[str, Any]:
         result = result["result"]
     if not isinstance(result, dict):
         raise RuntimeError("agent report must be a JSON object")
-    raw_bug_func = result.get("bug_func") or []
-    if isinstance(raw_bug_func, str):
-        raw_bug_func = [raw_bug_func]
-    bug_func = []
-    for function_id in raw_bug_func:
-        if isinstance(function_id, str) and function_id.strip():
-            if function_id.strip() not in bug_func:
-                bug_func.append(function_id.strip())
-    bug_desc = result.get("bug_desc")
-    bug_desc = bug_desc.strip() if isinstance(bug_desc, str) else ""
-    if not bug_func:
-        return {"bug_func": [], "bug_desc": NO_BUG_MESSAGE}
-    return {
-        "bug_func": bug_func,
-        "bug_desc": bug_desc or "Bug reported without a description.",
-    }
+    if set(result) != {"bugs"} or not isinstance(result["bugs"], list):
+        raise RuntimeError("agent report must contain only a bugs array")
+    bugs = []
+    for index, bug in enumerate(result["bugs"]):
+        label = f"bugs[{index}]"
+        if not isinstance(bug, dict) or set(bug) != {"bug_func", "bug_desc"}:
+            raise RuntimeError(f"{label} must contain exactly bug_func and bug_desc")
+        functions = bug["bug_func"]
+        if (not isinstance(functions, list) or not functions
+                or any(not isinstance(f, str) or not f.strip() for f in functions)):
+            raise RuntimeError(f"{label}.bug_func must be a non-empty array of strings")
+        description = bug["bug_desc"]
+        if not isinstance(description, str) or not description.strip():
+            raise RuntimeError(f"{label}.bug_desc must be a non-empty string")
+        bugs.append({
+            "bug_func": list(dict.fromkeys(f.strip() for f in functions)),
+            "bug_desc": description.strip(),
+        })
+    return {"bugs": bugs}
 
 
 # ---------------------------------------------------------------------------
@@ -799,7 +792,7 @@ def _process_input(
                 # Reaching max_steps is a valid, non-retry outcome. Preserve
                 # the historical empty-candidate output for this case.
                 result_text = json.dumps(
-                    {"bug_func": [], "bug_desc": NO_BUG_MESSAGE},
+                    {"bugs": []},
                     indent=2,
                     ensure_ascii=False,
                 )
