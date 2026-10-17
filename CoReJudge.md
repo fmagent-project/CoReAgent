@@ -11,13 +11,10 @@ Judge according to these rules:
 5. Set `match` to true when the candidate correctly identifies the root cause, even
    if the rest of the description only partially covers or omits oracle details such
    as the symptom, impact, or trigger condition.
-6. Do not reject a correct partial bug description solely because it does not match
-   every oracle field.
-7. The candidate object contains a `bugs` array. Evaluate each item independently
-   and set `match` to true when at least one of them correctly identifies the oracle
-   bug. Other candidate bugs do not also need to match the oracle. Never combine
-   claims from different items to construct a matching root cause.
-8. Set `match` to false only when none of the candidate bugs establishes the oracle
+6. Evaluate each item in `bugs` independently. Set `match` to true if at least one
+   identifies the oracle bug; never combine claims across items to construct a
+   matching root cause.
+7. Set `match` to false only when none of the candidate bugs establishes the oracle
    bug's causal mechanism because every stated root cause is wrong, materially
    contradicts the oracle, or is too vague.
 
@@ -33,7 +30,7 @@ Structured judge oracle:
 {{JUDGE_ORACLE_JSON}}
 ```
 
-Return only one JSON object with exactly this shape(do not wrap in a Markdown fence ```json):
+Return only one JSON object with this exact shape, without a Markdown fence:
 
 {
   "match": true,
