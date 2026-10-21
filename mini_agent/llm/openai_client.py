@@ -65,7 +65,7 @@ class OpenAIClient(LLMClientBase):
         params = {
             "model": self.model,
             "messages": api_messages,
-            "max_completion_tokens": 32768,
+            "max_completion_tokens": 65536,
             # Enable reasoning_split to separate thinking content
             "extra_body": {"reasoning_split": True},
         }
@@ -280,21 +280,28 @@ class OpenAIClient(LLMClientBase):
         # Prepare request
         request_params = self._prepare_request(messages, tools)
 
-        # Make API request with retry logic
+        api_call = self._make_api_request
         if self.retry_config.enabled:
-            # Apply retry logic
             retry_decorator = async_retry(config=self.retry_config, on_retry=self.retry_callback)
             api_call = retry_decorator(self._make_api_request)
+
+        max_response_retries = 5
+        for attempt in range(max_response_retries + 1):
             response = await api_call(
                 request_params["api_messages"],
                 request_params["tools"],
             )
-        else:
-            # Don't use retry
-            response = await self._make_api_request(
-                request_params["api_messages"],
-                request_params["tools"],
-            )
+            choice = response.choices[0]
+            if (
+                choice.finish_reason in ("length", "null", None)
+                and not choice.message.tool_calls
+            ):
+                if attempt == max_response_retries:
+                    raise RuntimeError(
+                        "OpenAI response ended abnormally without tool calls "
+                        f"(finish_reason={choice.finish_reason!r}) after "
+                        f"{max_response_retries} retries."
+                    )
+                continue
 
-        # Parse and return response
-        return self._parse_response(response)
+            return self._parse_response(response)
