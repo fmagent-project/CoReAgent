@@ -140,7 +140,9 @@ class MiniMaxACPAgent:
                 await self._send(session_id, update_agent_thought(text_block(response.thinking)))
             if response.content:
                 await self._send(session_id, update_agent_message(text_block(response.content)))
-            agent.messages.append(Message(role="assistant", content=response.content, thinking=response.thinking, tool_calls=response.tool_calls))
+            if response.thinking2:
+                await self._send(session_id, update_agent_thought(text_block(response.thinking2)))
+            agent.messages.append(Message(role="assistant", content=response.content, thinking=response.thinking, thinking2=response.thinking2, tool_calls=response.tool_calls))
             if not response.tool_calls:
                 return "end_turn"
             for call in response.tool_calls:

@@ -151,6 +151,8 @@ class Agent:
             # Count thinking
             if msg.thinking:
                 total_tokens += len(encoding.encode(msg.thinking))
+            if msg.thinking2:
+                total_tokens += len(encoding.encode(msg.thinking2))
 
             # Count tool_calls
             if msg.tool_calls:
@@ -174,6 +176,8 @@ class Agent:
 
             if msg.thinking:
                 total_chars += len(msg.thinking)
+            if msg.thinking2:
+                total_chars += len(msg.thinking2)
 
             if msg.tool_calls:
                 total_chars += len(str(msg.tool_calls))
@@ -398,6 +402,7 @@ Requirements:
             self.logger.log_response(
                 content=response.content,
                 thinking=response.thinking,
+                thinking2=response.thinking2,
                 tool_calls=response.tool_calls,
                 finish_reason=response.finish_reason,
                 usage=response.usage
@@ -408,6 +413,7 @@ Requirements:
                 role="assistant",
                 content=response.content,
                 thinking=response.thinking,
+                thinking2=response.thinking2,
                 tool_calls=response.tool_calls,
             )
             self.messages.append(assistant_msg)
@@ -418,6 +424,10 @@ Requirements:
                 print(f"{Colors.DIM}{response.thinking}{Colors.RESET}")
 
             # Print assistant response
+            if response.thinking2:
+                print(f"\n{Colors.BOLD}{Colors.MAGENTA}🧠 Thinking2:{Colors.RESET}")
+                print(f"{Colors.DIM}{response.thinking2}{Colors.RESET}")
+
             if response.content:
                 print(f"\n{Colors.BOLD}{Colors.BRIGHT_BLUE}🤖 Assistant:{Colors.RESET}")
                 print(f"{response.content}")

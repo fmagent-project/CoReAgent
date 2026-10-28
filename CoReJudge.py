@@ -327,8 +327,8 @@ def is_majority_judge_result(result: Any) -> bool:
 def run(output_dir: Path, *, force: bool = False) -> Path:
     paths = derive_paths(output_dir)
     if paths.result.is_file() and not force:
-        if is_majority_judge_result(read_json(paths.result, "judge result")):
-            return paths.result
+        return paths.result
+    print(f"judging {paths.candidate}", file=sys.stderr, flush=True)
     candidate = normalize_candidate(read_json(paths.candidate, "candidate"))
 
     # A normalized no-bug report is unambiguously a semantic non-match. Handle

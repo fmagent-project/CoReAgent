@@ -23,7 +23,7 @@ add/remove) are serialized with advisory file locks under .repos/.locks/.
 
 Layout example:
     .repos/django_django.git                    # bare blobless store (shared)
-    .repos/django_django_26552_gpt-4o/          # per-case, per-model worktree
+    .repos/django_django_<case_hash>_gpt-4o/     # per-case, per-model worktree
     .repos/.locks/django_django.lock            # store lock (shared)
     .repos/.locks/django_django_26552.gpt-4o.lock  # per-case, per-model lock
 
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import hashlib
 import json
 import os
 import re
@@ -372,16 +373,18 @@ def model_token(model: str) -> str:
 
 
 def worktree_path(repos_dir: Path, repo_name: str, name: str, model: str) -> Path:
-    """Per-case, per-model worktree path: .repos/<owner_repo>_<issuenumber>_<model>.
+    """Per-case, per-model worktree path: .repos/<owner_repo>_<case_hash>_<model>.
 
     The case name normally already carries the owner_repo prefix (e.g.
     django_django_26552), so the prefix is stripped to avoid repeating it.
     The model token is appended so different models checking out the same
     case do not share (and thus fight over) a single worktree directory.
+    Hash the case identifier so the directory does not expose the issue number.
     """
     if name.startswith(repo_name + "_"):
         name = name[len(repo_name) + 1:]
-    return repos_dir / f"{repo_name}_{name}_{model_token(model)}"
+    case_hash = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+    return repos_dir / f"{repo_name}_{case_hash}_{model_token(model)}"
 
 
 def ensure_worktree(store_dir: Path, commit: str, wt_path: Path) -> None:

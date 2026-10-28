@@ -63,6 +63,8 @@ class AgentLogger:
             }
             if msg.thinking:
                 msg_dict["thinking"] = msg.thinking
+            if msg.thinking2 is not None:
+                msg_dict["thinking2"] = msg.thinking2
             if msg.tool_calls:
                 msg_dict["tool_calls"] = [tc.model_dump() for tc in msg.tool_calls]
             if msg.tool_call_id:
@@ -88,7 +90,8 @@ class AgentLogger:
         thinking: str | None = None,
         tool_calls: list[ToolCall] | None = None,
         finish_reason: str | None = None,
-        usage: TokenUsage | None = None
+        usage: TokenUsage | None = None,
+        thinking2: str | None = None,
     ):
         """Log LLM response
 
@@ -108,6 +111,8 @@ class AgentLogger:
 
         if thinking:
             response_data["thinking"] = thinking
+        if thinking2 is not None:
+            response_data["thinking2"] = thinking2
 
         if tool_calls:
             response_data["tool_calls"] = [tc.model_dump() for tc in tool_calls]

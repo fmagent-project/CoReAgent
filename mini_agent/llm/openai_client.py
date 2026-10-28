@@ -166,6 +166,9 @@ class OpenAIClient(LLMClientBase):
                 if msg.thinking:
                     assistant_msg["reasoning_details"] = [{"text": msg.thinking}]
 
+                if msg.thinking2 is not None:
+                    assistant_msg["reasoning_content"] = msg.thinking2
+
                 api_messages.append(assistant_msg)
 
             # For tool result messages
@@ -224,6 +227,8 @@ class OpenAIClient(LLMClientBase):
                 if hasattr(detail, "text"):
                     thinking_content += detail.text
 
+        thinking2_content = getattr(message, "reasoning_content", None)
+
         # Extract tool calls
         tool_calls = []
         if message.tool_calls:
@@ -258,6 +263,7 @@ class OpenAIClient(LLMClientBase):
         return LLMResponse(
             content=text_content,
             thinking=thinking_content if thinking_content else None,
+            thinking2=thinking2_content,
             tool_calls=tool_calls if tool_calls else None,
             finish_reason=response.choices[0].finish_reason or "stop",
             usage=usage,
