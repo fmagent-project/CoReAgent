@@ -24,7 +24,7 @@ Final report (mandatory):
 2. End your last reply with exactly that same raw JSON object and no other text.
 
 Report format:
-{"bugs": [{"bug_func": ["<id from call_graph.nodes>"], "bug_desc": "<description of this bug and how it is triggered>"}]}
+{"bugs": [{"bug_func": ["<id from call_graph.nodes>"], "bug_desc": "<description of this bug and how it is triggered, including root cause, trigger condition, symptom and impact, expected behavior>"}]}
 
 Return only `bugs`, with one item per distinct bug containing exactly `bug_func`
 and `bug_desc`. Each item needs a non-empty function-ID array and a non-empty description.

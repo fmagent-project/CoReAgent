@@ -1,36 +1,40 @@
-# Semantic evaluation
+# Task: Match a Candidate Bug to the Ground Truth
 
-Judge according to these rules:
+Determine whether the candidate bug below describes the same underlying bug as
+the ground truth. Return `match: true` only when the candidate's stated cause
+and the ground truth's cause are semantically equivalent. The two descriptions
+may use different terminology or levels of detail.
 
-1. Judge whether the candidate bug description is semantically correct.
-2. Function localization is scored separately and is not part of this decision.
-3. Treat wording differences as irrelevant, but do not infer facts that the
-   candidate did not state.
-4. The structured judge oracle has no required field set. Treat its fields as
-   evidence, not as a checklist that the candidate must reproduce.
-5. Set `match` to true when the candidate correctly identifies the root cause, even
-   if the rest of the description only partially covers or omits oracle details such
-   as the symptom, impact, or trigger condition.
-6. Evaluate each item in `bugs` independently. Set `match` to true if at least one
-   identifies the oracle bug; never combine claims across items to construct a
-   matching root cause.
-7. Set `match` to false only when none of the candidate bugs establishes the oracle
-   bug's causal mechanism because every stated root cause is wrong, materially
-   contradicts the oracle, or is too vague.
+Use the ground truth as evidence about the target bug, not as a list of fields
+that the candidate must reproduce. Compare the actual claims in the candidate
+with the ground truth, including the cause and relevant conditions or behavior
+when provided. Do not add unstated claims to the candidate or assume that two
+bugs are the same merely because they affect the same file, function, or
+symptom.
 
-Candidate bugs (`bugs: []` means no candidate and must yield `match: false`):
+Set `match` to `false` if the candidate describes a different cause, materially
+contradicts the ground truth, or gives only a symptom or vague suspicion that
+does not identify the ground-truth bug. A missing detail does not make a
+candidate wrong when its stated cause is already specific enough to identify
+the same bug.
+
+Evaluate only the candidate bug shown below against the ground truth.
+
+Candidate bug:
 
 ```json
 {{CANDIDATE_DESCRIPTION_JSON}}
 ```
 
-Structured judge oracle:
+Ground truth:
 
 ```json
 {{JUDGE_ORACLE_JSON}}
 ```
 
-Return only one JSON object with this exact shape, without a Markdown fence:
+Return only one JSON object with this exact shape, without a Markdown fence.
+Set `reason` to a brief explanation that names the candidate's relevant claim
+and the corresponding ground-truth evidence:
 
 {
   "match": true,
