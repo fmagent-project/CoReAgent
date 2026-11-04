@@ -515,14 +515,14 @@ def load_prompt_template() -> str:
     return prompt_file.read_text(encoding="utf-8")
 
 
-def build_prompt(input_data: dict[str, Any]) -> str:
+def build_prompt(input_data: dict[str, Any], *, without_spec: bool = False) -> str:
     call_graph = input_data.get("call_graph")
     if not isinstance(call_graph, dict):
         raise RuntimeError("input must contain a call_graph object")
     prompt = load_prompt_template().replace(
         "{call_graph}", json.dumps(call_graph, indent=2, ensure_ascii=False)
     )
-    graph_spec = input_data.get("graph_spec")
+    graph_spec = None if without_spec else input_data.get("graph_spec")
     graph_spec = graph_spec.strip() if isinstance(graph_spec, str) else ""
     prompt = prompt.replace("{graph_spec}", graph_spec)
     if not graph_spec:
@@ -691,6 +691,7 @@ def _process_input(
     config_override_home: Path | None,
     subprocess_env: dict[str, str] | None,
     force: bool,
+    without_spec: bool = False,
 ) -> int:
     """Run the bug-finding pipeline for one input file. Returns the process exit code."""
     name = case_name(input_path)
@@ -732,7 +733,7 @@ def _process_input(
             store_dir = ensure_store(repo_url, buggy_commit, repos_dir)
             wt_path = worktree_path(repos_dir, repo_dir_name(repo_url), name, model)
             ensure_worktree(store_dir, buggy_commit, wt_path)
-            prompt = build_prompt(input_data)
+            prompt = build_prompt(input_data, without_spec=without_spec)
         except RuntimeError as error:
             log(f"error: {name}: {error}")
             return 1
@@ -860,6 +861,7 @@ def process_input(
     config_override_home: Path | None,
     subprocess_env: dict[str, str] | None,
     force: bool,
+    without_spec: bool = False,
 ) -> int:
     """Run one case and always remove its worktree when the call returns."""
     try:
@@ -873,6 +875,7 @@ def process_input(
             config_override_home=config_override_home,
             subprocess_env=subprocess_env,
             force=force,
+            without_spec=without_spec,
         )
     finally:
         _cleanup_case_resources(input_path, repos_dir, model)
@@ -921,6 +924,11 @@ def main(argv: list[str] | None = None) -> int:
         "--force",
         action="store_true",
         help="rerun cases whose output file already exists",
+    )
+    parser.add_argument(
+        "--without-spec",
+        action="store_true",
+        help="omit graph_spec from the prompt provided to the agent",
     )
     parser.add_argument(
         "--workers",
@@ -979,6 +987,7 @@ def main(argv: list[str] | None = None) -> int:
                     config_override_home=config_override_home,
                     subprocess_env=subprocess_env,
                     force=args.force,
+                    without_spec=args.without_spec,
                 )
                 if code != 0:
                     log(f"case {case_name(input_path)} finished with exit code {code}")
@@ -1018,6 +1027,7 @@ def main(argv: list[str] | None = None) -> int:
                     config_override_home=config_override_home,
                     subprocess_env=subprocess_env,
                     force=args.force,
+                    without_spec=args.without_spec,
                 ): (case_dir, input_path)
                 for case_dir, input_path in work_items
             }
