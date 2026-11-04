@@ -31,11 +31,20 @@ class AgentLogger:
         """Start new run, create new log file"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_filename = f"agent_run_{timestamp}.log"
-        self.log_file = self.log_dir / log_filename
+        counter = 0
+        while True:
+            log_path = self.log_dir / log_filename
+            try:
+                log_stream = log_path.open("x", encoding="utf-8")
+            except FileExistsError:
+                counter += 1
+                log_filename = f"agent_run_{timestamp}_{counter}.log"
+                continue
+            break
+        self.log_file = log_path
         self.log_index = 0
 
-        # Write log header
-        with open(self.log_file, "w", encoding="utf-8") as f:
+        with log_stream as f:
             f.write("=" * 80 + "\n")
             f.write(f"Agent Run Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("=" * 80 + "\n\n")
