@@ -3,8 +3,8 @@
 
 For each input file under <task_dir>/input/*_input.json this script:
   1. maintains a shared bare git store per repository under .repos/
-     (cloned once, reused across cases), and checks out a dedicated git
-     worktree per case and model at buggy_commit;
+     (cloned once, reused across cases), and exports a temporary source
+     snapshot at buggy_commit without Git metadata;
   2. builds a bug-finding prompt (template loaded from CoReAgent.md) from the
      input's call_graph and graph_spec;
   3. runs `uv run python -m mini_agent.cli --workspace <worktree> --task <prompt>`
@@ -16,14 +16,14 @@ For each input file under <task_dir>/input/*_input.json this script:
      original filename.
 
 Concurrency: multiple cases may run in parallel, and different models may run
-the same case concurrently. Each (case, model) pair gets its own worktree and
-its own per-case lock (so checkouts and the agent's file reads never
-interfere), while metadata operations on a shared store (clone/fetch/worktree
-add/remove) are serialized with advisory file locks under .repos/.locks/.
+the same case concurrently. Each run gets its own temporary snapshot and
+each (case, model) pair has a per-case lock. Repository clone and fetch
+operations are serialized with advisory file locks under .repos/.locks/.
+Snapshots are removed after success, failure, or interruption.
 
 Layout example:
     .repos/django_django.git                    # bare blobless store (shared)
-    .repos/django_django_<case_hash>_gpt-4o/     # per-case, per-model worktree
+    .repos/core-<random>/                      # temporary source snapshot
     .repos/.locks/django_django.lock            # store lock (shared)
     .repos/.locks/django_django_26552.gpt-4o.lock  # per-case, per-model lock
 
@@ -53,7 +53,7 @@ import tempfile
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -365,6 +365,40 @@ def ensure_store(repo_url: str, commit: str, repos_dir: Path) -> Path:
                     f"commit {commit} not found in {repo_url} after fetch"
                 )
     return store_dir
+
+
+def export_snapshot(store: Path, commit: str, destination: Path) -> None:
+    """Export the buggy source tree without repository metadata."""
+    with tempfile.TemporaryFile() as archive:
+        result = subprocess.run(
+            ["git", "-C", str(store), "archive", "--format=tar", commit],
+            stdout=archive, stderr=subprocess.PIPE,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"git archive failed: {result.stderr.decode(errors='replace').strip()}"
+            )
+        archive.seek(0)
+        result = subprocess.run(
+            ["tar", "-xf", "-", "-C", str(destination)],
+            stdin=archive, stderr=subprocess.PIPE,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"snapshot extraction failed: {result.stderr.decode(errors='replace').strip()}"
+            )
+
+
+@contextmanager
+def snapshot_workspace(
+    store: Path, commit: str, repos_dir: Path, *, prefix: str = "core-",
+) -> Iterator[Path]:
+    """Yield a unique source snapshot and remove it on every exit path."""
+    repos_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=prefix, dir=repos_dir) as directory:
+        workspace = Path(directory)
+        export_snapshot(store, commit, workspace)
+        yield workspace
 
 
 def model_token(model: str) -> str:
@@ -711,7 +745,7 @@ def _process_input(
 
     # The per-case lock spans the whole run so the same case launched twice
     # concurrently does not double-execute or write the same outputs.
-    with file_lock(repos_dir / ".locks" / f"{name}.{model_token(model)}.lock"):
+    with file_lock(repos_dir / ".locks" / f"{name}.{model_token(model)}.lock"), ExitStack() as resources:
         if output_dir is None:
             model_dir = task_dir / f"CoReAgent-{model}"
         else:
@@ -731,8 +765,9 @@ def _process_input(
 
         try:
             store_dir = ensure_store(repo_url, buggy_commit, repos_dir)
-            wt_path = worktree_path(repos_dir, repo_dir_name(repo_url), name, model)
-            ensure_worktree(store_dir, buggy_commit, wt_path)
+            wt_path = resources.enter_context(
+                snapshot_workspace(store_dir, buggy_commit, repos_dir)
+            )
             prompt = build_prompt(input_data, without_spec=without_spec)
         except RuntimeError as error:
             log(f"error: {name}: {error}")
@@ -830,26 +865,6 @@ def _process_input(
         return exit_code if exit_code is not None else 1
 
 
-def _cleanup_case_resources(input_path: Path, repos_dir: Path, model: str) -> None:
-    """Remove a case worktree after success, failure, or interruption."""
-    try:
-        input_data = json.loads(input_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    repo_url = input_data.get("repo")
-    if not isinstance(repo_url, str) or not repo_url.strip():
-        return
-
-    repo_name = repo_dir_name(repo_url)
-    store_dir = repos_dir / f"{repo_name}.git"
-    wt_path = worktree_path(repos_dir, repo_name, case_name(input_path), model)
-    if store_dir.is_dir() and wt_path.exists():
-        try:
-            remove_worktree(store_dir, wt_path)
-        except Exception as error:
-            log(f"warning: could not remove worktree {wt_path}: {error}")
-
-
 def process_input(
     input_path: Path,
     *,
@@ -863,22 +878,19 @@ def process_input(
     force: bool,
     without_spec: bool = False,
 ) -> int:
-    """Run one case and always remove its worktree when the call returns."""
-    try:
-        return _process_input(
-            input_path,
-            task_dir=task_dir,
-            repos_dir=repos_dir,
-            project_root=project_root,
-            model=model,
-            output_dir=output_dir,
-            config_override_home=config_override_home,
-            subprocess_env=subprocess_env,
-            force=force,
-            without_spec=without_spec,
-        )
-    finally:
-        _cleanup_case_resources(input_path, repos_dir, model)
+    """Run one case using a temporary snapshot cleaned up by the pipeline."""
+    return _process_input(
+        input_path,
+        task_dir=task_dir,
+        repos_dir=repos_dir,
+        project_root=project_root,
+        model=model,
+        output_dir=output_dir,
+        config_override_home=config_override_home,
+        subprocess_env=subprocess_env,
+        force=force,
+        without_spec=without_spec,
+    )
 
 
 def _cleanup_all_case_resources() -> None:
