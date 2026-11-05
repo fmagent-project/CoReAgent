@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -279,16 +280,25 @@ def is_no_bug_candidate(candidate: Any) -> bool:
 
 
 def judge_candidates(
-    client: Any, model: str, prompts: list[str], provider: str,
+    client: Any, models: list[str], prompts: list[str], provider: str,
 ) -> dict[str, Any]:
-    """A judge votes yes as soon as any independent candidate matches."""
-    reasons = []
+    """Return the first candidate with a majority, or the final failed round."""
+    if len(models) != len(JUDGE_MODEL_FIELDS):
+        raise RuntimeError("expected exactly three judge models")
+    if not prompts:
+        raise RuntimeError("expected at least one candidate prompt")
     for index, prompt in enumerate(prompts):
-        verdict = call_judge_with_retry(client, model, prompt, provider)
-        reasons.append(f"bugs[{index}]: {verdict['reason']}")
-        if verdict["match"]:
-            return {"match": True, "reason": reasons[-1]}
-    return {"match": False, "reason": "\n".join(reasons)}
+        results = []
+        for model in models:
+            verdict = call_judge_with_retry(client, model, prompt, provider)
+            results.append({
+                "match": verdict["match"],
+                "reason": f"bugs[{index}]: {verdict['reason']}",
+            })
+        result = combine_judge_results(results)
+        if result["pass"]:
+            return result
+    return result
 
 
 def write_judge_result(path: Path, result: dict[str, Any]) -> None:
@@ -298,12 +308,26 @@ def write_judge_result(path: Path, result: dict[str, Any]) -> None:
     )
 
 
+def majority_bug_index(results: list[dict[str, Any]]) -> int | None:
+    """Return the candidate index supported by at least two judges."""
+    votes: dict[int, int] = {}
+    for result in results:
+        if not result["match"]:
+            continue
+        matched = re.match(r"bugs\[(\d+)\]:", result["reason"])
+        if matched is None:
+            raise RuntimeError("judge result does not identify a valid matched bug")
+        index = int(matched.group(1))
+        votes[index] = votes.get(index, 0) + 1
+    return next((index for index, count in votes.items() if count >= 2), None)
+
+
 def combine_judge_results(results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Keep each judge's verdict and require at least two matching votes."""
+    """Keep each judge's verdict and require two votes for the same bug."""
     if len(results) != len(JUDGE_MODEL_FIELDS):
         raise RuntimeError("expected exactly three judge results")
     combined = dict(zip(JUDGE_MODEL_FIELDS, results))
-    combined["pass"] = sum(result["match"] for result in results) >= 2
+    combined["pass"] = majority_bug_index(results) is not None
     return combined
 
 
@@ -316,11 +340,12 @@ def is_majority_judge_result(result: Any) -> bool:
             parse_judge_result(json.dumps(result[field]))
             for field in JUDGE_MODEL_FIELDS
         ]
+        expected_pass = combine_judge_results(results)["pass"]
     except RuntimeError:
         return False
     return (
         isinstance(result["pass"], bool)
-        and result["pass"] == combine_judge_results(results)["pass"]
+        and result["pass"] == expected_pass
     )
 
 
@@ -356,11 +381,10 @@ def run(output_dir: Path, *, force: bool = False) -> Path:
         )
     else:
         client = OpenAI(api_key=config.api_key, base_url=config.api_base)
-    results = [
-        judge_candidates(client, getattr(config, field), prompts, provider)
-        for field in JUDGE_MODEL_FIELDS
-    ]
-    result = combine_judge_results(results)
+    result = judge_candidates(
+        client, [getattr(config, field) for field in JUDGE_MODEL_FIELDS],
+        prompts, provider,
+    )
     write_judge_result(paths.result, result)
     return paths.result
 
